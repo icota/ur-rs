@@ -58,7 +58,7 @@ impl Decoder {
     pub fn receive(&mut self, value: &str) -> anyhow::Result<()> {
         let decoded = Self::decode(value)?;
         self.fountain
-            .receive(crate::fountain::Part::from_cbor(decoded)?)?;
+            .receive(crate::fountain::Part::from_cbor(decoded.as_slice())?)?;
         Ok(())
     }
 

@@ -255,6 +255,7 @@ pub struct Part {
     data: Vec<u8>,
 }
 
+#[allow(clippy::cast_possible_truncation)]
 impl Serialize for Part {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         let data = vec![
@@ -269,6 +270,8 @@ impl Serialize for Part {
     }
 }
 
+#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::cast_sign_loss)]
 impl<'de> Deserialize<'de> for Part {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         match Value::deserialize(deserializer) {
@@ -283,12 +286,15 @@ impl<'de> Deserialize<'de> for Part {
                             "unexpected item at position {}",
                             index
                         )));
-                        match array[index] {
+                        match array
+                            .get(index)
+                            .ok_or_else(|| serde::de::Error::custom("expected item"))?
+                        {
                             Value::Integer(integer) => {
-                                if integer > u32::MAX as i128 {
+                                if *integer > i128::from(u32::MAX) {
                                     return err;
                                 }
-                                Ok(integer as u32)
+                                Ok(*integer as u32)
                             }
                             _ => err,
                         }
@@ -299,7 +305,11 @@ impl<'de> Deserialize<'de> for Part {
                     let message_length = check_cbor_number(&array, 2)?;
                     let checksum = check_cbor_number(&array, 3)?;
 
-                    let data = match array[4].clone() {
+                    let data = match array
+                        .get(4)
+                        .ok_or_else(|| serde::de::Error::custom("expected item"))?
+                        .clone()
+                    {
                         Value::Bytes(bytes) => bytes,
                         _ => {
                             return Err(serde::de::Error::custom("unexpected item at position 4"));
@@ -338,8 +348,8 @@ impl std::fmt::Display for Part {
 }
 
 impl Part {
-    pub fn from_cbor(cbor: Vec<u8>) -> anyhow::Result<Self> {
-        match serde_cbor::from_slice(cbor.as_slice()) {
+    pub fn from_cbor(cbor: &[u8]) -> anyhow::Result<Self> {
+        match serde_cbor::from_slice(cbor) {
             Ok(v) => anyhow::Result::Ok(v),
             Err(e) => anyhow::Result::Err(anyhow::anyhow!(e)),
         }
@@ -353,9 +363,12 @@ impl Part {
         Ok(self.indexes()?.len() == 1)
     }
 
-    #[allow(clippy::cast_possible_truncation)]
     pub fn cbor(&self) -> anyhow::Result<Vec<u8>> {
-        Ok(serde_cbor::to_vec(self).unwrap())
+        match serde_cbor::to_vec(self) {
+            Ok(v) => Ok(v),
+            Err(e) => Err(anyhow::anyhow!(e)),
+        }
+        //Ok(serde_cbor::to_vec(self).unwrap())
     }
 
     #[must_use]
@@ -657,7 +670,7 @@ mod tests {
             data: vec![1, 5, 3, 3, 5],
         };
         let cbor = part.cbor().unwrap();
-        let part2 = Part::from_cbor(cbor.clone()).unwrap();
+        let part2 = Part::from_cbor(cbor.as_slice()).unwrap();
         let cbor2 = part2.cbor().unwrap();
         assert_eq!(cbor, cbor2);
     }
@@ -667,113 +680,135 @@ mod tests {
         // 0x18 is the first byte value that doesn't directly encode a u8,
         // but implies a following value
         assert_eq!(
-            Part::from_cbor(vec![0x18]).unwrap_err().to_string(),
+            Part::from_cbor(vec![0x18].as_slice())
+                .unwrap_err()
+                .to_string(),
             "invalid cbor serialization for Part"
         );
         // the top-level item must be an array
         assert_eq!(
-            Part::from_cbor(vec![0x1]).unwrap_err().to_string(),
+            Part::from_cbor(vec![0x1].as_slice())
+                .unwrap_err()
+                .to_string(),
             "invalid top-level item"
         );
         // the array must be of length five
         assert_eq!(
-            Part::from_cbor(vec![0x84, 0x1, 0x2, 0x3, 0x4])
+            Part::from_cbor(vec![0x84, 0x1, 0x2, 0x3, 0x4].as_slice())
                 .unwrap_err()
                 .to_string(),
             "invalid cbor array length"
         );
         assert_eq!(
-            Part::from_cbor(vec![0x86, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6])
+            Part::from_cbor(vec![0x86, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6].as_slice())
                 .unwrap_err()
                 .to_string(),
             "invalid cbor array length"
         );
         // the first item must be an unsigned integer
         assert_eq!(
-            Part::from_cbor(vec![0x85, 0x41, 0x1, 0x2, 0x3, 0x4, 0x41, 0x1])
+            Part::from_cbor(vec![0x85, 0x41, 0x1, 0x2, 0x3, 0x4, 0x41, 0x1].as_slice())
                 .unwrap_err()
                 .to_string(),
             "unexpected item at position 0"
         );
         // the second item must be an unsigned integer
         assert_eq!(
-            Part::from_cbor(vec![0x85, 0x1, 0x41, 0x2, 0x3, 0x4, 0x41, 0x1])
+            Part::from_cbor(vec![0x85, 0x1, 0x41, 0x2, 0x3, 0x4, 0x41, 0x1].as_slice())
                 .unwrap_err()
                 .to_string(),
             "unexpected item at position 1"
         );
         // the third item must be an unsigned integer
         assert_eq!(
-            Part::from_cbor(vec![0x85, 0x1, 0x2, 0x41, 0x3, 0x4, 0x41, 0x1])
+            Part::from_cbor(vec![0x85, 0x1, 0x2, 0x41, 0x3, 0x4, 0x41, 0x1].as_slice())
                 .unwrap_err()
                 .to_string(),
             "unexpected item at position 2"
         );
         // the fourth item must be an unsigned integer
         assert_eq!(
-            Part::from_cbor(vec![0x85, 0x1, 0x2, 0x3, 0x41, 0x4, 0x41, 0x1])
+            Part::from_cbor(vec![0x85, 0x1, 0x2, 0x3, 0x41, 0x4, 0x41, 0x1].as_slice())
                 .unwrap_err()
                 .to_string(),
             "unexpected item at position 3"
         );
         // the fifth item must be byte string
         assert_eq!(
-            Part::from_cbor(vec![0x85, 0x1, 0x2, 0x3, 0x4, 0x5])
+            Part::from_cbor(vec![0x85, 0x1, 0x2, 0x3, 0x4, 0x5].as_slice())
                 .unwrap_err()
                 .to_string(),
             "unexpected item at position 4"
         );
-        Part::from_cbor(vec![0x85, 0x1, 0x2, 0x3, 0x4, 0x41, 0x5]).unwrap();
+        Part::from_cbor(vec![0x85, 0x1, 0x2, 0x3, 0x4, 0x41, 0x5].as_slice()).unwrap();
     }
 
     #[test]
     fn test_part_from_cbor_unsigned_types() {
         // u8
-        Part::from_cbor(vec![0x85, 0x1, 0x2, 0x3, 0x4, 0x41, 0x5]).unwrap();
+        Part::from_cbor(vec![0x85, 0x1, 0x2, 0x3, 0x4, 0x41, 0x5].as_slice()).unwrap();
         // u16
-        Part::from_cbor(vec![
-            0x85, 0x19, 0x1, 0x2, 0x19, 0x3, 0x4, 0x19, 0x5, 0x6, 0x19, 0x7, 0x8, 0x41, 0x5,
-        ])
+        Part::from_cbor(
+            vec![
+                0x85, 0x19, 0x1, 0x2, 0x19, 0x3, 0x4, 0x19, 0x5, 0x6, 0x19, 0x7, 0x8, 0x41, 0x5,
+            ]
+            .as_slice(),
+        )
         .unwrap();
         // u32
-        Part::from_cbor(vec![
-            0x85, 0x1a, 0x1, 0x2, 0x3, 0x4, 0x1a, 0x5, 0x6, 0x7, 0x8, 0x1a, 0x9, 0x10, 0x11, 0x12,
-            0x1a, 0x13, 0x14, 0x15, 0x16, 0x41, 0x5,
-        ])
+        Part::from_cbor(
+            vec![
+                0x85, 0x1a, 0x1, 0x2, 0x3, 0x4, 0x1a, 0x5, 0x6, 0x7, 0x8, 0x1a, 0x9, 0x10, 0x11,
+                0x12, 0x1a, 0x13, 0x14, 0x15, 0x16, 0x41, 0x5,
+            ]
+            .as_slice(),
+        )
         .unwrap();
         // u64
         assert_eq!(
-            Part::from_cbor(vec![
-                0x85, 0x1b, 0x1, 0x2, 0x3, 0x4, 0xa, 0xb, 0xc, 0xd, 0x1a, 0x5, 0x6, 0x7, 0x8, 0x1a,
-                0x9, 0x10, 0x11, 0x12, 0x1a, 0x13, 0x14, 0x15, 0x16, 0x41, 0x5,
-            ])
+            Part::from_cbor(
+                vec![
+                    0x85, 0x1b, 0x1, 0x2, 0x3, 0x4, 0xa, 0xb, 0xc, 0xd, 0x1a, 0x5, 0x6, 0x7, 0x8,
+                    0x1a, 0x9, 0x10, 0x11, 0x12, 0x1a, 0x13, 0x14, 0x15, 0x16, 0x41, 0x5,
+                ]
+                .as_slice()
+            )
             .unwrap_err()
             .to_string(),
             "unexpected item at position 0"
         );
         assert_eq!(
-            Part::from_cbor(vec![
-                0x85, 0x1a, 0x1, 0x2, 0x3, 0x4, 0x1b, 0x5, 0x6, 0x7, 0x8, 0xa, 0xb, 0xc, 0xd, 0x1a,
-                0x9, 0x10, 0x11, 0x12, 0x1a, 0x13, 0x14, 0x15, 0x16, 0x41, 0x5,
-            ])
+            Part::from_cbor(
+                vec![
+                    0x85, 0x1a, 0x1, 0x2, 0x3, 0x4, 0x1b, 0x5, 0x6, 0x7, 0x8, 0xa, 0xb, 0xc, 0xd,
+                    0x1a, 0x9, 0x10, 0x11, 0x12, 0x1a, 0x13, 0x14, 0x15, 0x16, 0x41, 0x5,
+                ]
+                .as_slice()
+            )
             .unwrap_err()
             .to_string(),
             "unexpected item at position 1"
         );
         assert_eq!(
-            Part::from_cbor(vec![
-                0x85, 0x1a, 0x1, 0x2, 0x3, 0x4, 0x1a, 0x5, 0x6, 0x7, 0x8, 0x1b, 0x9, 0x10, 0x11,
-                0x12, 0xa, 0xb, 0xc, 0xd, 0x1a, 0x13, 0x14, 0x15, 0x16, 0x41, 0x5,
-            ])
+            Part::from_cbor(
+                vec![
+                    0x85, 0x1a, 0x1, 0x2, 0x3, 0x4, 0x1a, 0x5, 0x6, 0x7, 0x8, 0x1b, 0x9, 0x10,
+                    0x11, 0x12, 0xa, 0xb, 0xc, 0xd, 0x1a, 0x13, 0x14, 0x15, 0x16, 0x41, 0x5,
+                ]
+                .as_slice()
+            )
             .unwrap_err()
             .to_string(),
             "unexpected item at position 2"
         );
         assert_eq!(
-            Part::from_cbor(vec![
-                0x85, 0x1a, 0x1, 0x2, 0x3, 0x4, 0x1a, 0x5, 0x6, 0x7, 0x8, 0x1a, 0x9, 0x10, 0x11,
-                0x12, 0x1b, 0x13, 0x14, 0x15, 0x16, 0xa, 0xb, 0xc, 0xd, 0x41, 0x5,
-            ])
+            Part::from_cbor(
+                vec![
+                    0x85, 0x1a, 0x1, 0x2, 0x3, 0x4, 0x1a, 0x5, 0x6, 0x7, 0x8, 0x1a, 0x9, 0x10,
+                    0x11, 0x12, 0x1b, 0x13, 0x14, 0x15, 0x16, 0xa, 0xb, 0xc, 0xd, 0x41, 0x5,
+                ]
+                .as_slice()
+            )
             .unwrap_err()
             .to_string(),
             "unexpected item at position 3"
